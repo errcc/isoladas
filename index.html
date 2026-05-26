@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mapa Interativo</title>
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,300&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="loading">
+  <div class="loader-icon"></div>
+  <div class="loader-title">Carregando mapa</div>
+  <div class="loader-sub">Buscando dados da planilha…</div>
+</div>
+
+<div id="error-banner"></div>
+<div id="map"></div>
+
+<div id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-eyebrow">Mapa Interativo</div>
+    <!-- O título é preenchido via CONFIG.titulo abaixo -->
+    <div class="sidebar-title" id="sidebar-title">Pontos</div>
+    <div class="sidebar-subtitle">Clique para mostrar / ocultar camadas</div>
+  </div>
+
+  <div class="sidebar-body">
+    <div class="section-label">Rede</div>
+    <div class="rede-legend" id="rede-legend"></div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Municípios</div>
+    <div class="select-all" id="select-all-btn">
+      <span>Todos visíveis</span>
+      <div class="select-all-line"></div>
+    </div>
+    <div id="layer-list"></div>
+  </div>
+
+  <div class="sidebar-footer">
+    <div>
+      <div class="footer-label">Total de pontos</div>
+    </div>
+    <div class="footer-count" id="total-count">—<span>pts</span></div>
+  </div>
+</div>
+
+<button id="toggle-btn" title="Recolher painel">
+  <svg width="8" height="14" viewBox="0 0 8 14" fill="none">
+    <path d="M6 1.5L2 7L6 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+
+<script>
+/* ================================================================
+   ⚙️  Aŕea de configuração do mapa
+   ================================================================ */
+const CONFIG = {
+  csvUrl: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vScj2H7b4rNJER6AsvzZTznYNlEq1wKJ0IoKtp9YzsKMVn_FsC_vPL1O4aRw8X7BN2ogAZqljhJvCKH/pub?gid=0&single=true&output=csv',
+col: {
+  nome:               'Escola',
+  municipio:          'Município',
+  rede:               'Rede',
+  lat:                'Latitude',
+  lng:                'Longitude',
+  municipio_anterior: 'Município Anterior',
+  ano:                'Ano de Fundação',
+  terreno:            'Terreno',
+  estado:             'Estado Atual',
+
+  campos: [
+    { label: 'Terreno',        col: 'Terreno'          },
+    { label: 'Ano de Fundação',col: 'Ano de Fundação'  },
+    { label: 'Estado Atual', col: 'Estado Atual'     },
+    { label: 'Município Anterior', col: 'Município Anterior' },
+  ],
+},
+
+  // 3. Personalização
+  titulo:  'Mapa de Pontos',  // título do painel lateral
+  centro:  [-15.77, -47.92],
+  zoom:    5,
+};
+/* ================================================================ */
+
+
+/* --- Estilos por rede --- */
+const REDE_STYLES = {
+  federal:   { color: '#4a8fe8', label: 'Federal',   symbol: 'star'    },
+  estadual:  { color: '#e8a040', label: 'Estadual',  symbol: 'circle'  },
+  municipal: { color: '#4ec87a', label: 'Municipal', symbol: 'diamond' },
+};
+
+function getRedeStyle(rede) {
+  const key = String(rede || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+  return REDE_STYLES[key] || { color: '#909090', label: rede || 'Desconhecida', symbol: 'circle' };
+}
+
+/* --- Paleta de cores por município (painel lateral) --- */
+const PALETTE = [
+  '#e8c97e','#5ec4e8','#7dd49a','#e8758e',
+  '#9d7ee8','#e89b6d','#5ddac8','#b8e875',
+  '#e875d8','#7eb8e8','#e8d06a','#8facf0',
+];
+
+/* --- Inicializa mapa --- */
+const map = L.map('map', { zoomControl: false })
+  .setView(CONFIG.centro, CONFIG.zoom);
+
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+/*L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 19,
+}).addTo(map);
+
+/* -- REgião de controle de tiles --*/
+const satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  attribution: '&copy; Esri',
+  maxZoom: 19,
+});
+
+const sateliteRotulos = L.layerGroup([
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '&copy; Esri',
+    maxZoom: 19,
+  }),
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, opacity: 0.8,
+  }),
+]);
+
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+});
+
+const baseMaps = {
+  'Satélite':              satelite,
+  'Satélite + Rótulos':   sateliteRotulos,
+  'Mapa (OSM)':            osm,
+};
+
+// Inicia com satélite ativo
+satelite.addTo(map);
+
+// Adiciona o controle de seleção
+L.control.layers(baseMaps, {}, { position: 'topright', collapsed: false }).addTo(map);
+
+/* -- fim da REgião de controle de tiles --*/
+
+/* --- Estado --- */
+const layerState = {};
+
+/* --- Ícone SVG por rede --- */
+function symbolPath(symbol) {
+  switch (symbol) {
+    case 'star':
+      // estrela de 5 pontas centralizada em (11,11) r=5
+      return `<polygon points="11,5 12.9,9.8 18,9.8 14,12.7 15.4,17.5 11,14.5 6.6,17.5 8,12.7 4,9.8 9.1,9.8"
+               fill="white" opacity="0.92"/>`;
+    case 'diamond':
+      return `<polygon points="11,6 16,11 11,16 6,11" fill="white" opacity="0.92"/>`;
+    case 'circle':
+    default:
+      return `<circle cx="11" cy="11" r="4.5" fill="white" opacity="0.92"/>`;
+  }
+}
+
+function makeIcon(rede) {
+  const { color, symbol } = getRedeStyle(rede);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="30" viewBox="0 0 22 30">
+    <path d="M11 0C4.93 0 0 4.93 0 11c0 7.33 11 19 11 19S22 18.33 22 11C22 4.93 17.07 0 11 0z"
+          fill="${color}" opacity="0.92"/>
+    ${symbolPath(symbol)}
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: '',
+    iconSize: [22, 30],
+    iconAnchor: [11, 30],
+    popupAnchor: [0, -32],
+  });
+}
+
+/* --- Mini-ícone SVG para a legenda no painel --- */
+function makeLegendIcon(rede) {
+  const { color, symbol } = getRedeStyle(rede);
+  return `<svg class="rede-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 30">
+    <path d="M11 0C4.93 0 0 4.93 0 11c0 7.33 11 19 11 19S22 18.33 22 11C22 4.93 17.07 0 11 0z"
+          fill="${color}" opacity="0.92"/>
+    ${symbolPath(symbol)}
+  </svg>`;
+}
+
+/* --- Conteúdo do popup --- */
+function buildPopup(row, munColor) {
+  const mun   = esc(row[CONFIG.col.municipio] || '—');
+  const nome  = esc(row[CONFIG.col.nome]      || '(sem nome)');
+  const rede  = row[CONFIG.col.rede] || '';
+  const rs    = getRedeStyle(rede);
+  const redeBg   = rs.color + '25';
+  const munBg    = munColor + '25';
+
+  const fieldsHtml = CONFIG.col.campos.map((f, i) => {
+    const val = esc(row[f.col] || '—');
+    const sep = i > 0 ? '<div class="popup-sep"></div>' : '';
+    return `${sep}
+      <div class="popup-row">
+        <span class="popup-label">${esc(f.label)}</span>
+        <span class="popup-value">${val}</span>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="popup-inner">
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:11px;">
+        <div class="popup-badge" style="background:${redeBg}; color:${rs.color};">
+          <span class="popup-badge-dot" style="background:${rs.color};"></span>
+          ${esc(rs.label)}
+        </div>
+        <div class="popup-badge" style="background:${munBg}; color:${munColor};">
+          <span class="popup-badge-dot" style="background:${munColor};"></span>
+          ${mun}
+        </div>
+      </div>
+      <div class="popup-title">${nome}</div>
+      <div class="popup-fields">${fieldsHtml}</div>
+    </div>`;
+}
+
+/* --- Legenda de rede --- */
+function buildRedeLegend() {
+  const container = document.getElementById('rede-legend');
+  container.innerHTML = '';
+  ['federal','estadual','municipal'].forEach(key => {
+    const s = REDE_STYLES[key];
+    const item = document.createElement('div');
+    item.className = 'rede-legend-item';
+    item.innerHTML = `${makeLegendIcon(key)}<span>${s.label}</span>`;
+    container.appendChild(item);
+  });
+}
+
+/* --- Sidebar: renderiza lista de municípios --- */
+function buildSidebar() {
+  const list = document.getElementById('layer-list');
+  list.innerHTML = '';
+
+  const munsOrdenados = Object.keys(layerState).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  munsOrdenados.forEach(mun => {
+    const { color, count } = layerState[mun];
+
+    const item = document.createElement('div');
+    item.className = 'layer-item';
+    item.dataset.mun = mun;
+    item.innerHTML = `
+      <span class="layer-pip" style="background:${color};"></span>
+      <span class="layer-name">${esc(mun)}</span>
+      <span class="layer-count">${count}</span>`;
+
+    item.addEventListener('click', () => toggleLayer(mun, item));
+    list.appendChild(item);
+  });
+}
+
+/* --- Toggle de camada --- */
+function toggleLayer(mun, item) {
+  const s = layerState[mun];
+  if (s.visible) {
+    map.removeLayer(s.group);
+    s.visible = false;
+    item.classList.add('off');
+  } else {
+    map.addLayer(s.group);
+    s.visible = true;
+    item.classList.remove('off');
+  }
+  updateSelectAll();
+}
+
+function updateSelectAll() {
+  const all   = Object.values(layerState);
+  const allOn = all.every(s => s.visible);
+  const btn   = document.getElementById('select-all-btn');
+  btn.querySelector('span').textContent = allOn ? 'Ocultar todos' : 'Todos visíveis';
+}
+
+/* --- Botão "Todos" --- */
+document.getElementById('select-all-btn').addEventListener('click', () => {
+  const all   = Object.values(layerState);
+  const allOn = all.every(s => s.visible);
+  const items = document.querySelectorAll('.layer-item');
+
+  all.forEach(s => {
+    if (allOn) { map.removeLayer(s.group); s.visible = false; }
+    else        { map.addLayer(s.group);   s.visible = true;  }
+  });
+  items.forEach(el => allOn ? el.classList.add('off') : el.classList.remove('off'));
+  updateSelectAll();
+});
+
+/* --- Toggle sidebar --- */
+const sidebar   = document.getElementById('sidebar');
+const toggleBtn = document.getElementById('toggle-btn');
+toggleBtn.addEventListener('click', () => {
+  sidebar.classList.toggle('collapsed');
+  toggleBtn.classList.toggle('collapsed');
+});
+
+/* --- escape HTML --- */
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* --- Carrega dados --- */
+document.getElementById('sidebar-title').textContent = CONFIG.titulo;
+buildRedeLegend();
+
+Papa.parse(CONFIG.csvUrl, {
+  download: true,
+  header: true,
+  skipEmptyLines: true,
+  complete({ data, errors }) {
+    if (errors.length && !data.length) {
+      hideLoading();
+      showError('Erro ao carregar a planilha. Verifique a URL CSV e as permissões de compartilhamento.');
+      return;
+    }
+
+    let colorIdx = 0;
+    let total    = 0;
+    const bounds = [];
+
+    data.forEach(row => {
+      const lat  = parseFloat(row[CONFIG.col.lat]);
+      const lng  = parseFloat(row[CONFIG.col.lng]);
+      const mun  = (row[CONFIG.col.municipio] || 'Desconhecido').trim();
+      const rede = (row[CONFIG.col.rede]      || '').trim();
+
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      if (!layerState[mun]) {
+        const color = PALETTE[colorIdx % PALETTE.length];
+        colorIdx++;
+        layerState[mun] = {
+          group:   L.layerGroup().addTo(map),
+          color,
+          visible: true,
+          count:   0,
+        };
+      }
+
+      const { color, group } = layerState[mun];
+      // Ícone determinado pela rede; cor do município vai só pro popup
+      const marker = L.marker([lat, lng], { icon: makeIcon(rede) });
+      marker.bindPopup(buildPopup(row, color), { maxWidth: 290, className: '' });
+      group.addLayer(marker);
+      layerState[mun].count++;
+      bounds.push([lat, lng]);
+      total++;
+    });
+
+    document.getElementById('total-count').innerHTML = `${total}<span>pts</span>`;
+    buildSidebar();
+    updateSelectAll();
+    if (bounds.length > 0) map.fitBounds(bounds, { padding: [60, 60] });
+    hideLoading();
+  },
+  error() {
+    hideLoading();
+    showError('Não foi possível acessar a planilha. Verifique a URL e as configurações de compartilhamento público.');
+  },
+});
+
+function showError(msg) {
+  const b = document.getElementById('error-banner');
+  b.textContent = msg;
+  b.style.display = 'block';
+}
+
+function hideLoading() {
+  const el = document.getElementById('loading');
+  el.classList.add('hidden');
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 600);
+}
+</script>
+</body>
+</html>
